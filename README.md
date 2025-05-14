@@ -87,7 +87,7 @@ Assuming you have an nvme drive that is not formatted, you will have to format t
 For example, if your computer has a device located at `/dev/nvme0n1`, then you can format the drive with the command:
 
 ```bash
-sudo mkfs -t xfs /dev/nvme0n1
+sudo mkfs -t xfs /dev/nvme1n1
 ```
 For your computer, the device name and location may be different.
 
@@ -110,13 +110,13 @@ sudo mkdir -p /mnt/ledger
 Next, change the ownership of the directory to your sol user:
 
 ```bash
-sudo chown -R sol:sol /mnt/ledger
+sudo chown -R ubuntu:ubuntu /mnt/ledger
 ```
 
 Now you can mount the drive:
 
 ```bash
-sudo mount -o noatime /dev/nvme0n1 /mnt/ledger
+sudo mount -o noatime /dev/nvme1n1 /mnt/ledger
 ```
 
 #### Formatting And Mounting Drive: AccountsDB
@@ -126,7 +126,7 @@ You will also want to mount the accounts db on a separate hard drive. The proces
 Assuming you have device at `/dev/nvme1n1`, format the device and verify it exists:
 
 ```bash
-sudo mkfs -t xfs /dev/nvme1n1
+sudo mkfs -t xfs /dev/nvme2n1
 ```
 
 Then verify the UUID for the device exists:
@@ -144,13 +144,13 @@ sudo mkdir -p /mnt/accounts
 Change the ownership of that directory:
 
 ```bash
-sudo chown -R sol:sol /mnt/accounts
+sudo chown -R ubunut:ubuntu /mnt/accounts
 ```
 
 And lastly, mount the drive:
 
 ```bash
-sudo mount -o noatime  /dev/nvme1n1 /mnt/accounts
+sudo mount -o noatime  /dev/nvme2n1 /mnt/accounts
 ```
 
 
@@ -250,6 +250,154 @@ export RUSTFLAGS="-Clink-arg=-fuse-ld=lld -Ctarget-cpu=native"
 ./scripts/cargo-install-all.sh  --release-with-lto --validator-only .
 export PATH=$PWD/bin:$PATH
 ```
+# Building Solana Validators: Agave, Jito, Paladin
+
+This guide outlines **how to build three Solana validator types from source**: Agave, Jito, and Paladin. It includes the official steps, as well as optional ideas for performance tuning or modifying build behavior.
+
+---
+
+## ✅ 1. Agave Validator (manual build with LTO)
+
+Recommended if you want **maximum performance**, control over compilation, or building from a specific tag.
+
+```bash
+# Install Rust and system dependencies
+curl https://sh.rustup.rs -sSf | sh
+source $HOME/.cargo/env
+rustup component add rustfmt
+rustup update
+rustup default nightly
+rustup override set nightly
+
+sudo apt-get update
+sudo apt-get install -y libssl-dev libudev-dev pkg-config zlib1g-dev llvm clang cmake make libprotobuf-dev protobuf-compiler lld
+
+# Clone source
+git clone https://github.com/anza-xyz/agave.git
+cd agave
+export TAG="v2.1.18"
+git switch tags/$TAG --detach
+
+# Enable LTO optimizations
+cat >> Cargo.toml <<EOF
+[profile.release-with-lto]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+EOF
+
+# Modify build script to accept LTO profile
+# Edit ./scripts/cargo-install-all.sh manually or add:
+buildProfileArg='--profile release-with-lto'
+buildProfile='release-with-lto'
+
+# Build validator only
+export RUSTFLAGS="-Clink-arg=-fuse-ld=lld -Ctarget-cpu=native"
+./scripts/cargo-install-all.sh --release-with-lto --validator-only .
+
+# Add to PATH
+export PATH=$PWD/bin:$PATH
+```
+
+---
+
+## ⚡ 2. Jito Validator
+
+Jito provides its own fork of Solana optimized for MEV, bundle processing, and high-frequency performance.
+
+```bash
+# Clean old version (optional)
+cd ~ && rm -rf ~/jito-solana
+
+# Clone repo and select tag
+git clone https://github.com/jito-foundation/jito-solana.git --recurse-submodules
+cd jito-solana
+export TAG=v2.0.15-jito
+git checkout tags/$TAG
+git submodule update --init --recursive
+
+# Build validator
+CI_COMMIT=$(git rev-parse HEAD) scripts/cargo-install-all.sh --validator-only ~/.local/share/solana/install/releases/"$TAG"
+
+# Replace active_release symlink
+cd ~/.local/share/solana/install/releases
+rm -rf active_release
+mv "$TAG" active_release
+
+# Confirm version
+$HOME/.local/share/solana/install/releases/active_release/bin/solana -V
+```
+
+> 🔍 **Note:** Jito validator binary is still called `agave-validator`. That's expected.
+
+📌 **Tip:** Jito can be built with the same LTO profile method as Agave for slightly better runtime efficiency — though by default it's already optimized.
+
+---
+
+## 🛡️ 3. Paladin Validator
+
+Paladin is a fork focused on security hardening and determinism, maintained by Paladin Bladesmith.
+
+```bash
+# Clone Paladin Solana
+git clone --recursive https://github.com/paladin-bladesmith/paladin-solana.git
+cd paladin-solana
+git checkout v2.1.18-paladin
+
+# Ensure submodules
+git submodule update --init --recursive
+
+# Build
+./cargo build --release
+```
+
+🧠 Like Jito, Paladin still uses the binary name `agave-validator` — but version check will reflect `Paladin`.
+
+> ⚠️ If using Paladin or Jito — always **check compatibility** with Jito relayer/block engine before mixing.
+
+---
+
+## 🧠 Summary Comparison
+
+| Build       | LTO Optimized    | Target Audience              | Recommended For           |
+| ----------- | ---------------- | ---------------------------- | ------------------------- |
+| **Agave**   | ✅ (customizable) | General validators           | Max performance & tuning  |
+| **Jito**    | ⚠️ Partially     | MEV/Bundle/BlockEngine users | Traders, power validators |
+| **Paladin** | ❌ by default     | Security-focused forks       | Deterministic ops, audits |
+
+---
+
+## ✅ Optional: Enable LTO in Jito/Paladin (Advanced)
+
+You can enable manual `release-with-lto` profile in Jito or Paladin:
+
+1. Add this to `Cargo.toml`:
+
+```toml
+[profile.release-with-lto]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+```
+
+2. Adjust `cargo-install-all.sh` or build manually:
+
+```bash
+cargo build --release --profile release-with-lto
+```
+
+3. Export optimized binary path to `PATH`
+
+---
+
+## 🧩 Final Notes
+
+* **Always pin exact tags** when building production validators
+* **Do not mix builds** across networks (e.g., Agave binary on Jito relayer)
+* **If unsure — use official releases** instead of building from source
+
+Let me know if you'd like a version with logrotate, systemd service, or RAM-disk integration
+
 
 ## 🦾 System Tuning
 
